@@ -1,0 +1,39 @@
+#include <esp_log.h>
+#include <string>
+#include <Task.h>
+#include <HttpServer.h>
+#include "irrc.h"
+#include "irserver.h"
+
+#include "sdkconfig.h"
+
+static const char tag[] = "irserver";
+
+static const char rootPath[] = "/fs-disabled";
+static const char transmitPath[] = "/transmit";
+
+static void transmitHandler(HttpRequest* request, HttpResponse* response)
+{
+    ESP_LOGI(tag, "invoked TRANSMIT");
+    
+    response->setStatus(HttpResponse::HTTP_STATUS_OK, "OK");
+    response->addHeader(HttpRequest::HTTP_HEADER_CONTENT_TYPE, "text/plain");
+    response->sendData("OK");
+    response->close();
+}
+
+static HttpServer* httpd = NULL;
+
+void startIRServer()
+{
+    if (httpd == NULL){
+	httpd = new HttpServer();
+	httpd->setRootPath(rootPath);
+	httpd->addPathHandler(
+	    HttpRequest::HTTP_METHOD_POST,
+	    transmitPath, transmitHandler);
+	    
+	httpd->start(IRSERVER_PORT);
+	ESP_LOGI(tag, "IR server has been started. port: %d", IRSERVER_PORT);
+    }
+}

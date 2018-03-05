@@ -1,0 +1,6 @@
+build
+sdkconfig
+sdkconfig.old
+components/cpp_utils
+*.o
+hosttool/irtx

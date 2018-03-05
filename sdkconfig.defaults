@@ -1,0 +1,9 @@
+#
+# Serial flasher config
+#
+CONFIG_ESPTOOLPY_PORT="/dev/cu.SLAB_USBtoUART"
+
+#
+# Compiler options
+#
+CONFIG_CXX_EXCEPTIONS=y
