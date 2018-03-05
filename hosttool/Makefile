@@ -1,5 +1,5 @@
 DEBUGFLAGS	= -g
-CFLAGS		= -I../main $(DEBUGFLAGS)
+CFLAGS		= -I../main $(DEBUGFLAGS) -std=c99
 TARGETS 	= irtx
 OBJS		= irtx.o irslib.o
 
