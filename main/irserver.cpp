@@ -232,31 +232,29 @@ bool CommunicationTask::makeResponse(const IRSHeader* req, IRSCmd respCode,
 bool CommunicationTask::cmdTxFormat(const IRSHeader* hdr,
 				    const void* data, int32_t dataSize)
 {
-    IRSTxFormatData* dhdr = (IRSTxFormatData*)data;
-    IRSFormat format = (IRSFormat)ntohs(dhdr->format);
-    int dataLen = ntohs(dhdr->dataLen);
-    const char* sformat = "unknown";
-    if (format == IRSFORMAT_NEC){
-	sformat = "NEC";
-    }else if (format == IRSFORMAT_AEHA){
-	sformat = "AEHA";
-    }else if (format == IRSFORMAT_SONY){
-	sformat = "SONY";
-    }
+    {
+	IRSTxFormatData* dhdr = (IRSTxFormatData*)data;
+	IRSFormat format = (IRSFormat)ntohs(dhdr->format);
+	int dataLen = ntohs(dhdr->dataLen);
 
-    ESP_LOGI(tag, "cmdTxFormat invoked: format[%s] data length[%d]",
-	     sformat, dataLen);
-    if (format == IRSFORMAT_NEC && dataLen == 3){
+	IRRC_PROTOCOL protocol;
+	if (format == IRSFORMAT_NEC){
+	    protocol = IRRC_NEC;
+	}else if (format == IRSFORMAT_AEHA){
+	    protocol = IRRC_AEHA;
+	}else if (format == IRSFORMAT_SONY){
+	    protocol = IRRC_SONY;
+	}else{
+	    ESP_LOGE(tag, "not supported format");
+	    goto END;
+	}
+
+	IRRCChangeProtocol(&irrc, protocol);
 	unsigned char* cbuf = (unsigned char*)(dhdr + 1);
-	int b1 = (int)(cbuf[0]);
-	int b2 = (int)(cbuf[1]);
-	int b3 = (int)(cbuf[2]);
-	ESP_LOGI(tag, "    data: 0x%02x%02x%02x", b1, b2, b3);
 	IRRCSend(&irrc, cbuf, dataLen);
-    }else{
-	ESP_LOGE(tag, "not supported request");
     }
 
+END:
     return makeResponse(hdr, IRServerCmdAck, NULL, 0); 
 }
 

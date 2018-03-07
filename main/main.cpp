@@ -12,7 +12,6 @@
 
 static const char tag[] = "main";
 
-
 static WiFi* wifi;
 
 class MyWiFiEventHandler: public WiFiEventHandler {
