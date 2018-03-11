@@ -7,3 +7,8 @@ CONFIG_ESPTOOLPY_PORT="/dev/cu.SLAB_USBtoUART"
 # Compiler options
 #
 CONFIG_CXX_EXCEPTIONS=y
+
+#
+# C++ settings
+#
+CONFIG_LIBCURL_PRESENT=y
