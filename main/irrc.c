@@ -279,7 +279,7 @@ void IRRCSend(IRRC* ctx, uint8_t* data, int32_t length)
     ESP_LOGI(tag, "IRRCSend: format[%s] bytes[%d]",
 	     ProtocolDef[ctx->protocol].name, length);
     ESP_LOG_BUFFER_HEX(tag, data, length);
-    if (makeSendData(ctx, data, length)){
+    if (ProtocolDef[ctx->protocol].make(ctx, data, length)){
 	rmt_write_items(ctx->rmt.channel, ctx->buff, ctx->usedLen, 1);
 	rmt_wait_tx_done(ctx->rmt.channel, portMAX_DELAY);
     }
