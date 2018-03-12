@@ -9,7 +9,6 @@
 
 #include "sdkconfig.h"
 
-
 static const char tag[] = "main";
 
 static WiFi* wifi;
@@ -17,7 +16,7 @@ static WiFi* wifi;
 class MyWiFiEventHandler: public WiFiEventHandler {
 
     esp_err_t staGotIp(system_event_sta_got_ip_t event_sta_got_ip) {
-	startIRServer();
+	//startIRServer();
 	return ESP_OK;
     }
 
@@ -29,6 +28,9 @@ class MyWiFiEventHandler: public WiFiEventHandler {
 
 extern "C" void app_main() {
     initBoard();
+
+    tcpip_adapter_init();
+    startIRServer();
     
     MyWiFiEventHandler *eventHandler = new MyWiFiEventHandler();
 	
