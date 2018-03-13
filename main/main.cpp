@@ -5,6 +5,8 @@
 #include <WiFiEventHandler.h>
 #include "esp_wifi.h"
 #include "irserver.h"
+#include "webserver.h"
+
 #include "boardconfig.h"
 
 #include "sdkconfig.h"
@@ -31,6 +33,7 @@ extern "C" void app_main() {
 
     tcpip_adapter_init();
     startIRServer();
+    startHttpServer();
     
     MyWiFiEventHandler *eventHandler = new MyWiFiEventHandler();
 	
