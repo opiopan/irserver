@@ -25,7 +25,8 @@ components/mongoose: components
 	cd components; \
 	git clone https://github.com/cesanta/mongoose.git
 	echo "COMPONENT_ADD_INCLUDEDIRS=." > $@/component.mk
-	echo "CFLAGS += -DMG_ENABLE_HTTP_STREAMING_MULTIPART" >> $@/component.mk
+	echo "CFLAGS += -DMG_ENABLE_HTTP_STREAMING_MULTIPART " \
+	     "-DMG_ENABLE_FILESYSTEM=1" >> $@/component.mk
 
 components:
 	mkdir $@
