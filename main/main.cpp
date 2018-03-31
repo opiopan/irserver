@@ -34,6 +34,8 @@ class MyWiFiEventHandler: public WiFiEventHandler {
 #include <mbedtls/pk.h>
 #include <mbedtls/sha256.h>
 
+#include "signature.h"
+
 class VerifySignatureTask : public Task {
 public:
     VerifySignatureTask() : tag("VerifySignature"){};
@@ -47,12 +49,11 @@ void VerifySignatureTask::run(void* ctxdata) {
     const char* datapath = "/spiffs/test";
     const char* signpath = "/spiffs/test.sign";
 
-    mbedtls_pk_context pk;
-    mbedtls_pk_init( &pk );
+    PK pk;
 
     /* load public key file */
     int ret;
-    ret = mbedtls_pk_parse_public_keyfile( &pk, keypath);
+    ret = pk.parsePublicKeyfile(keypath);
     if (ret != 0){
 	ESP_LOGE(tag,
 		 "failed: mbedtls_pk_parse_public_keyfile "
@@ -77,9 +78,7 @@ void VerifySignatureTask::run(void* ctxdata) {
     fclose (fp);
     
     /* compute sha-256 hash */
-    mbedtls_sha256_context sha;
-    mbedtls_sha256_init(&sha);
-    mbedtls_sha256_starts(&sha, 0);
+    SHA256 hash;
     
     size_t bufsize = 1024;
     uint8_t* buf = (uint8_t*)malloc(bufsize);
@@ -96,17 +95,16 @@ void VerifySignatureTask::run(void* ctxdata) {
 	    fclose(fp);
 	    return;
 	}
-	mbedtls_sha256_update(&sha, buf, ret);
+	hash.update(buf, ret);
     }
     fclose(fp);
     free(buf);
 
-    uint8_t hash[32];
-    mbedtls_sha256_finish(&sha, hash);
+    hash.finish();
 
-    uint8_t txt[sizeof(hash) * 2 + 1];
+    uint8_t txt[hash.getHashLength() * 2 + 1];
     for (int i = 0; i < sizeof(txt) - 1; i++){
-	int data = (hash[i/2] >> (i & 1 ? 0 : 4)) & 0xf;
+	int data = (hash.getHash()[i/2] >> (i & 1 ? 0 : 4)) & 0xf;
 	static const unsigned char dic[] = "0123456789abcdef";
 	txt[i] = dic[data];
     }
@@ -115,14 +113,27 @@ void VerifySignatureTask::run(void* ctxdata) {
     
 
     /* verify signature */
-    ret = mbedtls_pk_verify(&pk, MBEDTLS_MD_SHA256,
-			    hash, 0,
-			    sign, sign_len);
+    ret = pk.verify(&hash, sign, sign_len);
     if (ret == 0) {
 	ESP_LOGI(tag, "succeed verification of signature");
     } else {
 	ESP_LOGE(tag, "failed: mbedtls_pk_verify returned -0x%04x", -ret);
     }
+}
+
+#include <mdns.h>
+#include "irserverProtocol.h"
+static void start_mdns() {
+    ESP_ERROR_CHECK(mdns_init());
+    ESP_ERROR_CHECK(mdns_hostname_set("esp32ir"));
+    ESP_ERROR_CHECK(mdns_instance_name_set("esp32"));
+    
+    ESP_ERROR_CHECK( mdns_service_add("irserver", "_irserveer", "_tcp",
+				      IRSERVER_PORT, NULL, 0) );
+    ESP_ERROR_CHECK( mdns_service_add("World Wide Web", "_http", "_tcp",
+				      80, NULL, 0) );
+
+    ESP_LOGI(tag, "mdns service registered");
 }
 
 extern "C" void app_main() {
@@ -185,10 +196,11 @@ extern "C" void app_main() {
     static VerifySignatureTask* vstask = NULL;
     vstask = new VerifySignatureTask();
     vstask->start();
-    
+
     //----------------------------------------------------
     // irserver main logic
     //----------------------------------------------------
+    start_mdns();
     tcpip_adapter_init();
     startIRServer();
     startHttpServer();
