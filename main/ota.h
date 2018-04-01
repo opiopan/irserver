@@ -21,5 +21,5 @@ public:
     virtual OTARESULT addDataFlagment(const void* flagment, size_t length) = 0;
 };
 
-OTARESULT startOTA(const char* pubkey_path, OTA** outp);
+OTARESULT startOTA(const char* pubkey_path, size_t imageSize, OTA** outp);
 OTARESULT endOTA(const OTA* handle, bool needCommit);

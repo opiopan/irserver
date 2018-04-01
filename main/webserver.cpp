@@ -135,9 +135,10 @@ void HttpServerTask::defHandler(struct mg_connection *nc,
 #include "ota.h"
 class DLContext : public ConnectionContext {
 public:
+    bool image;
     OTA* ota;
     
-    DLContext() : ota(NULL){};
+    DLContext() : image(false), ota(NULL){};
     virtual ~DLContext(){
 	if (ota){
 	    end(false);
@@ -146,6 +147,7 @@ public:
 
     void start(OTA* in){
 	ota = in;
+	image = true;
     };
     OTARESULT end(bool needCommit){
 	OTARESULT rc = ::endOTA(ota, needCommit);
@@ -191,14 +193,52 @@ void HttpServerTask::downloadHandler(struct mg_connection *nc,
 	if (!mg_http_check_digest_auth(hm, domain, fp)){
 	    ESP_LOGE(tag, "authorize failed");
 	    mg_http_send_digest_auth_request(nc, domain);
-	    nc->flags |= MG_F_SEND_AND_CLOSE;
+	    nc->flags |= MG_F_SEND_AND_CLOSE;;
 	    return;
 	}
 	ESP_LOGI(tag, "user authorized");
+
+	mg_str* sizeStr = mg_get_http_header(hm, "X-OTA-Image-Size");
+	size_t imageSize = 0;
+	if (sizeStr){
+	    for (int i = 0; i < sizeStr->len; i++){
+		int digit = sizeStr->p[i];
+		if (digit >= '0' && digit <= '9'){
+		    imageSize *= 10;
+		    imageSize += digit - '0';
+		}else{
+		    imageSize = 0;
+		    break;
+		}
+	    }
+	    ESP_LOGI(tag, "image size: %d", imageSize);
+	}
+	
 	DLContext* ctx = new DLContext();
 	nc->user_data = ctx;
+	OTA* ota = NULL;
+	if (startOTA("/spiffs/public-key.pem", imageSize, &ota)
+	    != OTA_SUCCEED){
+	    ESP_LOGE(tag, "downloading in parallel");
+	    mg_printf(
+		nc,
+		"HTTP/1.1 200 OK\r\n"
+		"Content-Type: text/plain\r\n"
+		"Connection: close\r\n\r\n"
+		"firmware downloading is proceeding in parallel\r\n");
+	    nc->flags |= MG_F_SEND_AND_CLOSE;
+	    return;
+	}
+	ctx->start(ota);
+	mg_str* value = mg_get_http_header(hm, "Expect");
+	static const mg_str CONTINUE = MG_MK_STR("100-continue");
+	if (value != NULL && isEqual(value, &CONTINUE)) {
+	    ESP_LOGI(tag, "response 100 continue");
+	    mg_printf(nc,"HTTP/1.1 100 continue\r\n\r\n");
+	}
     }else if (ev == MG_EV_HTTP_MULTIPART_REQUEST_END){
-	if (nc->user_data == NULL){
+	DLContext* ctx = (DLContext*)nc->user_data;
+	if (ctx && !ctx->image){
 	    ESP_LOGE(tag, "no image part");
 	    mg_http_send_digest_auth_request(nc, domain);
 	    nc->flags |= MG_F_SEND_AND_CLOSE;
@@ -209,22 +249,8 @@ void HttpServerTask::downloadHandler(struct mg_connection *nc,
 	struct mg_http_multipart_part *mp =
 	    (struct mg_http_multipart_part *) p;
 	DLContext* ctx = (DLContext*)nc->user_data;
-	if (ctx && ctx->ota == NULL && strcmp(mp->var_name, "image") == 0){
+	if (ctx && ctx->ota && strcmp(mp->var_name, "image") == 0){
 	    ESP_LOGI(tag, "begin update firmware");
-
-	    OTA* ota = NULL;
-	    if (startOTA("/spiffs/public-key.pem", &ota) != OTA_SUCCEED){
-		ESP_LOGE(tag, "downloading in parallel");
-		mg_printf(
-		    nc,
-		    "HTTP/1.1 200 OK\r\n"
-		    "Content-Type: text/plain\r\n"
-		    "Connection: close\r\n\r\n"
-		    "firmware downloading is proceeding in parallel\r\n");
-		nc->flags |= MG_F_SEND_AND_CLOSE;
-		return;
-	    }
-	    ctx->start(ota);
 	}
     }else if (ev == MG_EV_HTTP_PART_DATA){
 	DLContext* ctx = (DLContext*)nc->user_data;
