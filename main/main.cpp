@@ -136,6 +136,35 @@ static void start_mdns() {
     ESP_LOGI(tag, "mdns service registered");
 }
 
+
+#include "BME280.h"
+class BME280Task : public Task {
+public:
+    BME280Task() : tag("BME280Task"){};
+protected:
+    const char* tag;
+    void run(void *data) override{
+	vTaskDelay(7000 / portTICK_PERIOD_MS);
+
+	BME280_I2C* dev;
+	dev = new BME280_I2C(0x76, GPIO_NUM_21, GPIO_NUM_22);
+	dev->init();
+	
+	vTaskDelay(4000 / portTICK_PERIOD_MS);
+	while (true){
+	    dev->start(true);
+	    vTaskDelay(1000 / portTICK_PERIOD_MS);
+	    dev->measure();
+	    printf("BME280: Temp[%.1f dig] Hum[%.1f %%] Press[%.1f hPa]\n",
+		   dev->getTemperatureFloat(),
+		   dev->getHumidityFloat(),
+		   dev->getPressureFloat());
+	    vTaskDelay(60000 / portTICK_PERIOD_MS);
+	}
+    };
+};
+
+
 extern "C" void app_main() {
     initBoard();
 
@@ -197,6 +226,13 @@ extern "C" void app_main() {
     vstask = new VerifySignatureTask();
     vstask->start();
 
+    //----------------------------------------------------
+    // study BME280
+    //----------------------------------------------------
+    static BME280Task* bmeTask = NULL;
+    bmeTask = new BME280Task();
+    bmeTask->start();
+    
     //----------------------------------------------------
     // irserver main logic
     //----------------------------------------------------

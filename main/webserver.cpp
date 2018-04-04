@@ -137,8 +137,9 @@ class DLContext : public ConnectionContext {
 public:
     bool image;
     OTA* ota;
+    bool reply;
     
-    DLContext() : image(false), ota(NULL){};
+    DLContext() : image(false), ota(NULL), reply(false){};
     virtual ~DLContext(){
 	if (ota){
 	    end(false);
@@ -245,6 +246,7 @@ void HttpServerTask::downloadHandler(struct mg_connection *nc,
 	    return;
 	}
 	ESP_LOGI(tag, "end mpart req");
+	nc->flags |= MG_F_SEND_AND_CLOSE;
     }else if (ev == MG_EV_HTTP_PART_BEGIN) {
 	struct mg_http_multipart_part *mp =
 	    (struct mg_http_multipart_part *) p;
@@ -268,7 +270,9 @@ void HttpServerTask::downloadHandler(struct mg_connection *nc,
 		    "Content-Type: text/plain\r\n"
 		    "Connection: close\r\n\r\n"
 		    "update data failed: 0x%x\r\n", rc);
-		nc->flags |= MG_F_SEND_AND_CLOSE;
+		//nc->flags |= MG_F_SEND_AND_CLOSE;
+		ctx->reply = true;
+		ctx->end(false);
 		return;
 	    }
 	}
