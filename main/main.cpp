@@ -2,11 +2,14 @@
 #include <esp_spiffs.h>
 #include <esp_wifi.h>
 #include <string>
+#include <time.h>
+#include <sys/time.h>
 #include <Task.h>
 #include <WiFi.h>
 #include <WiFiEventHandler.h>
 #include "irserver.h"
 #include "webserver.h"
+#include "Time.h"
 
 #include "boardconfig.h"
 
@@ -19,7 +22,18 @@ static WiFi* wifi;
 class MyWiFiEventHandler: public WiFiEventHandler {
 
     esp_err_t staGotIp(system_event_sta_got_ip_t event_sta_got_ip) {
-	//startIRServer();
+	if (Time::shouldAdjust()){
+	    ESP_LOGI("main", "start SNTP & wait for finish adjustment");
+	    Time::startSNTP();
+	    if (!Time::waitForFinishAdjustment(10)){
+		ESP_LOGE("main", "fail to adjust time by SNTP");
+	    }
+	}
+
+	Time::setTZ("JST-9");
+	Time now;
+	printf("%s\n", now.format(Time::SIMPLE_DATETIME));
+	
 	return ESP_OK;
     }
 
@@ -137,7 +151,7 @@ static void start_mdns() {
 }
 
 
-#include "BME280.h"
+#include "bme280.h"
 class BME280Task : public Task {
 public:
     BME280Task() : tag("BME280Task"){};
@@ -147,7 +161,9 @@ protected:
 	vTaskDelay(7000 / portTICK_PERIOD_MS);
 
 	BME280_I2C* dev;
-	dev = new BME280_I2C(0x76, GPIO_NUM_21, GPIO_NUM_22);
+	dev = new BME280_I2C(0x76, GPIO_NUM_21, GPIO_NUM_22,
+			     I2C::DEFAULT_CLK_SPEED,
+			     I2C_NUM_0, false);
 	dev->init();
 	
 	vTaskDelay(4000 / portTICK_PERIOD_MS);
@@ -155,7 +171,9 @@ protected:
 	    dev->start(true);
 	    vTaskDelay(1000 / portTICK_PERIOD_MS);
 	    dev->measure();
-	    printf("BME280: Temp[%.1f dig] Hum[%.1f %%] Press[%.1f hPa]\n",
+	    Time now;
+	    printf("%s Temp[%.1f dig] Hum[%.1f %%] Press[%.1f hPa]\n",
+		   now.format(Time::SIMPLE_DATETIME),
 		   dev->getTemperatureFloat(),
 		   dev->getHumidityFloat(),
 		   dev->getPressureFloat());
@@ -247,4 +265,5 @@ extern "C" void app_main() {
     wifi->setWifiEventHandler(eventHandler);
 
     wifi->connectAP(CONFIG_WIFI_SSID, CONFIG_WIFI_PASSWORD);
+    esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
 }

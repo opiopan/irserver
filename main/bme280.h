@@ -133,7 +133,8 @@ public:
 	       gpio_num_t sdaPin = I2C::DEFAULT_SDA_PIN,
 	       gpio_num_t sclPin = I2C::DEFAULT_CLK_PIN,
 	       uint32_t clkSpeed = I2C::DEFAULT_CLK_SPEED,
-	       i2c_port_t portNum = I2C_NUM_0);
+	       i2c_port_t portNum = I2C_NUM_0,
+	       bool builtinPullup = true);
     virtual ~BME280_I2C();
 
 protected:

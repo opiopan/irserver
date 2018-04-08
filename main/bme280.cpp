@@ -161,8 +161,9 @@ BME280_I2C::BME280_I2C(uint8_t address,
 		       gpio_num_t sdaPin,
 		       gpio_num_t sclPin,
 		       uint32_t clkSpeed,
-		       i2c_port_t portNum) {
-    i2c.init(address, sdaPin, sclPin, clkSpeed, portNum);
+		       i2c_port_t portNum,
+		       bool builtinPullup){
+    i2c.init(address, sdaPin, sclPin, clkSpeed, portNum, builtinPullup);
     //i2c.scan();
 }
 
