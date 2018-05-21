@@ -1,343 +1,410 @@
 #include <esp_log.h>
-#include <string.h>
-#include <Task.h>
-#include <lwip/sockets.h>
-#include <lwip/netdb.h>
-#include <mongoose.h>
-#include "Mutex.h"
+#include <iostream>
+#include <sstream>
 #include "webserver.h"
-#include "htdigestfs.h"
-#include "reboot.h"
-#include "boardconfig.h"
 
 #include "sdkconfig.h"
 
-const char* tag = "webserver";
+static const char* tag = "WebServer";
 
-class ConnectionContext {
-public:
-    virtual ~ConnectionContext(){};
+//----------------------------------------------------------------------
+// WebString helper functions
+//----------------------------------------------------------------------
+std::ostream& operator<<(std::ostream& os, const WebString& ws){
+    os.write(ws.data(), ws.length());
+    return os;
+}
+
+//----------------------------------------------------------------------
+// HttpRequest imprementation
+//----------------------------------------------------------------------
+static const mg_str methodStrings[] = {
+    MG_MK_STR("GET"),
+    MG_MK_STR("HEAD"),
+    MG_MK_STR("POST"),
+    MG_MK_STR("PUT"),
+    MG_MK_STR("DELETE"),
+    MG_MK_STR("CONNECT"),
+    MG_MK_STR("OPTIONS"),
+    MG_MK_STR("TRASE"),
+    MG_MK_STR("LINK"),
+    MG_MK_STR("UNLINK")
 };
 
-class HttpServerTask : public Task {
-private:
-  mg_mgr mgr;
-  mg_connection *nc;
-    
-public:
-    HttpServerTask();
-    bool init(const char* port);
+static WebString webStringWithCopy(const mg_str& src){
+    return WebString(stringPtr(new std::string(src.p, src.len)));
+}
 
-private:
-    void run(void *data) override;
-
-    static void defHandler(struct mg_connection *nc, int ev, void *p);
-    static void downloadHandler(struct mg_connection *nc, int ev, void *p);
+static WebString webStringWithoutCopy(const mg_str& src){
+    return WebString(src);
 };
 
-HttpServerTask::HttpServerTask(){
+void HttpRequest::reset(http_message* msg, bool copy){
+    headerData.clear();
+    parametersData.clear();
+    delete[] parametersBuf;
+    parametersBuf = NULL;
+    methodCode = MethodUnknown;
+
+    if (msg == NULL){
+	return;
+    }
+
+    auto genstr = copy ? webStringWithCopy : webStringWithoutCopy;
+    methodData = genstr(msg->method);
+    uriData = genstr(msg->uri);
+    protocolData = genstr(msg->proto);
+    queryStringData = genstr(msg->query_string);
+    if (copy){
+	bodyData = "";
+    }else{
+	bodyData = genstr(msg->body);;
+    }
+
+    WebString method = WebString(msg->method);
+    for (int i = 0; i < MethodUnknown; i++){
+	if (method == methodStrings[i]){
+	    methodCode = (Method)i;
+	    break;
+	}
+    }
+
+    for (int i = 0;
+	 i < sizeof(msg->header_names) / sizeof(*msg->header_names); i++){
+	if (msg->header_names[i].p == NULL){
+	    break;
+	}
+	headerData[WebString(msg->header_names[i])] =
+	    WebString(msg->header_values[i]);
+    }
+
+    const WebString ctype = headerData[WebString("Content-Type")];
+    if (methodCode == MethodGet && msg->query_string.len > 0){
+	setParameters(&(msg->query_string));
+    }else if (ctype == "application/x-www-form-urlencoded"){
+	setParameters(&msg->body);
+    }
 }
 
-bool HttpServerTask::init(const char* port){
-    mg_mgr_init(&mgr, NULL);
-    nc = mg_bind(&mgr, port, defHandler);
-    if (nc == NULL) {
-	ESP_LOGE(tag, "Error setting up listener!");
-	return false;
-    }
-    mg_set_protocol_http_websocket(nc);
-    mg_register_http_endpoint(nc, "/download", downloadHandler);
-    
-    return true;
+void HttpRequest::addParameter(const WebString& key, const WebString& value){
+    parametersData[key] = value;
 }
 
-void HttpServerTask::run(void *data){
-    while (1) {
-	mg_mgr_poll(&mgr, 1000);
+void HttpRequest::setParameters(const mg_str* src) {
+    parametersBuf = new char[src->len + 1];
+    int begin = 0;
+    for (int end = 0; end < src->len + 1; end++){
+	if (end == src->len || src->p[end] == '&'){
+	    int len = mg_url_decode(src->p + begin, end - begin,
+				    parametersBuf + begin, end -begin,
+				    true);
+	    if (len > 0){
+		for (int separator = begin; separator < end; separator++){
+		    if (parametersBuf[begin] == '='){
+			const auto key =
+			    WebString(parametersBuf + begin,
+				      separator - begin);
+			const auto value =
+			    WebString(parametersBuf + separator + 1,
+				      end - separator - 1);
+			parametersData[key] = value;
+		    }
+		}
+	    }
+	    begin = end + 1;
+	}
     }
 }
 
-void HttpServerTask::defHandler(struct mg_connection *nc,
-					  int ev, void *p) {
-    static const char *reply_fmt =
-	"HTTP/1.0 200 OK\r\n"
-	"Connection: close\r\n"
-	"Content-Type: text/plain\r\n"
-	"\r\n"
-	"Hello %s\n";
+//----------------------------------------------------------------------
+// HttpResponse imprementation
+//----------------------------------------------------------------------
+static const char* httpStatusStr[] = {
+    "100 Continue",
+    "101 Switching Protocols",
+    "200 OK",
+    "201 Created",
+    "202 Accepted",
+    "203 Non-Authoritative Information",
+    "204 No Content",
+    "205 ResetContent",
+    "206 Partial Content",
+    "300 Multiple Choices",
+    "301 Moved Permanently",
+    "302 Found",
+    "303 See Other",
+    "304 Not Modified",
+    "305 Use Proxy",
+    "307 Temporary Redirect",
+    "400 Bad Request",
+    "401 Unauthorized",
+    "402 Payment Required",
+    "403 Forbidden",
+    "404 Not Found",
+    "405 Method Not Allowed",
+    "406 Not Acceptable",
+    "407 Proxy Authentication Required",
+    "408 Request Timeout",
+    "409 Conflict",
+    "410 Gone",
+    "411 Length Required",
+    "412 Precondition Failed",
+    "413 Request Entity Too Large",
+    "414 Request-URI Too Long",
+    "415 Unsupported Media Type",
+    "416 Requested Range Not Satisfiable",
+    "417 Expectation Failed",
+    "500 Internal Server Error",
+    "501 Not Implemented",
+    "502 Bad Gateway",
+    "503 Service Unavailable",
+    "504 Gateway Timeout",
+    "505 HTTP Version Not Supported"
+};
 
-    switch (ev) {
-    case MG_EV_ACCEPT: {
-	char addr[32];
-	mg_sock_addr_to_str(&nc->sa, addr, sizeof(addr),
-			    MG_SOCK_STRINGIFY_IP | MG_SOCK_STRINGIFY_PORT);
-	ESP_LOGI(tag, "Connection %p from %s", nc, addr);
-	break;
+void HttpResponse::reset(){
+    status = ST_OPEN;
+    httpStatus = RESP_200_OK;
+    headerData.clear();
+    bodyData = "";
+}
+
+void HttpResponse::close(Status status){
+    this->status = status;
+}
+
+void HttpResponse::flush(mg_connection* con){
+    if (status == ST_OPEN){
+	ESP_LOGE(tag, "HTTP response object is not closed");
     }
+    if (status != ST_FLUSHED){
+	std::stringstream resp;
+	resp << "HTTP/1.0 " << httpStatusStr[httpStatus] << std::endl;
+	for (auto i = headerData.begin(); i != headerData.end(); i++){
+	    const WebString key = i->first;
+	    resp << key << ": " << i->second << "\r\n";
+	}
+	resp << "\r\n";
+	mg_send(con, resp.str().data(), resp.str().length());	
+	if (bodyData.length() > 0){
+	    mg_send(con, bodyData.data(), bodyData.length());
+	}
+    }
+    status = ST_FLUSHED;
+}
+
+//----------------------------------------------------------------------
+// WebServerConnection imprementation
+//----------------------------------------------------------------------
+void WebServerConnection::dispatchEvent(int ev, void* p){
+    switch (ev){
     case MG_EV_HTTP_REQUEST: {
-	char addr[32];
-	struct http_message *hm = (struct http_message *) p;
-	mg_sock_addr_to_str(&nc->sa, addr, sizeof(addr),
-			    MG_SOCK_STRINGIFY_IP | MG_SOCK_STRINGIFY_PORT);
-	ESP_LOGI(tag, "HTTP request from %s: %.*s %.*s",
-		 addr, (int) hm->method.len,
-		 hm->method.p, (int) hm->uri.len, hm->uri.p);
-	mg_printf(nc, reply_fmt, addr);
-	nc->flags |= MG_F_SEND_AND_CLOSE;
-	break;
-    }
-    case MG_EV_CLOSE: {
-	ESP_LOGI(tag, "Connection %p closed", nc);
-	ConnectionContext* ctx = (ConnectionContext*)nc->user_data;
-	delete ctx;
+	ESP_LOGI(tag, "EV_HTTP_REQUEST");
+	auto hm = (http_message*)p;
+	requestData.reset(hm, false);
+	responseData.reset();
+	handler = server->findHandler(requestData.uri());
+	status = CON_COMPLETE;
 	break;
     }
     case MG_EV_HTTP_MULTIPART_REQUEST: {
-	char addr[32];
-	struct http_message *hm = (struct http_message *) p;
-	mg_sock_addr_to_str(&nc->sa, addr, sizeof(addr),
-			    MG_SOCK_STRINGIFY_IP | MG_SOCK_STRINGIFY_PORT);
-	ESP_LOGI(tag, "HTTP mp req from %s: %.*s %.*s",
-		 addr, (int) hm->method.len,
-		 hm->method.p, (int) hm->uri.len, hm->uri.p);
+	ESP_LOGI(tag, "EV_HTTP_MULTIPART_REQUEST");
+	status = CON_MPART_INIT;
+	auto hm = (http_message*)p;
+	requestData.reset(hm, true);
+	responseData.reset();
+	handler = server->findHandler(requestData.uri());
+	if (handler){
+	    handler->beginMultipart(*this);
+	    if (responseData.getStatus() == HttpResponse::ST_CLOSE){
+		status = CON_COMPLETE;
+		break;
+	    }
+	    auto header = requestData.header();
+	    if (header[WebString("Expect")] == "100-continue"){
+		mg_printf(connection, "HTTP/1.1 100 continue\r\n\r\n");
+	    }
+	}else if (requestData.method() != HttpRequest::MethodGet){
+	    // call makeFileResponse() to build 404 response
+	    makeFileResponse();
+	    status = CON_COMPLETE;
+	}
 	break;
     }
-    case MG_EV_HTTP_MULTIPART_REQUEST_END:
-    {
-	ESP_LOGI(tag, "HTTP mp req end");
-	mg_printf(nc,
-		  "HTTP/1.1 200 OK\r\n"
-		  "Content-Type: text/plain\r\n"
-		  "Connection: close\r\n\r\n"
-		  "Written POST data to a temp file\n\n");
-	nc->flags |= MG_F_SEND_AND_CLOSE;
+    case MG_EV_HTTP_MULTIPART_REQUEST_END:{
+	ESP_LOGI(tag, "EV_HTTP_MULTIPART_REQUEST_END");
+	if (handler){
+	    handler->endMultipart(*this);
+	}
+	status = CON_COMPLETE;
 	break;
     }
     case MG_EV_HTTP_PART_BEGIN: {
-	struct mg_http_multipart_part *mp =
-	    (struct mg_http_multipart_part *) p;
-	ESP_LOGI(tag, "part begin: key = %s", mp->var_name);
+	ESP_LOGI(tag, "EV_HTTP_PART_BEGIN");
+	if (status == CON_COMPLETE){
+	    break;
+	}
+	status = CON_MPART_DATA;
+	if (handler && responseData.getStatus() == HttpResponse::ST_OPEN){
+	    auto mp = (mg_http_multipart_part*)p;
+	    handler->beginMultipartData(*this, mp->var_name);
+	}
 	break;
     }
     case MG_EV_HTTP_PART_DATA: {
-	struct mg_http_multipart_part *mp =
-	    (struct mg_http_multipart_part *) p;
-	ESP_LOGI(tag, "part data: %d byte", mp->data.len);
+	ESP_LOGI(tag, "EV_HTTP_PART_DATA");
+	if (status == CON_COMPLETE){
+	    break;
+	}
+	if (handler && responseData.getStatus() == HttpResponse::ST_OPEN){
+	    auto mp = (mg_http_multipart_part*)p;
+	    handler->updateMultipartData(
+		*this, mp->var_name, mp->data.p, mp->data.len);
+	}
 	break;
     }
     case MG_EV_HTTP_PART_END: {
-	ESP_LOGI(tag, "part end");
+	ESP_LOGI(tag, "EV_HTTP_PART_END");
+	if (handler && responseData.getStatus() == HttpResponse::ST_OPEN){
+	    handler->endMultipartData(*this);
+	}
+	if (status != CON_COMPLETE){
+	    status = CON_MPART_INIT;
+	}
+	break;
+    }
+    }
+
+    if (status == CON_COMPLETE &&
+	responseData.getStatus() != HttpResponse::ST_FLUSHED){
+	ESP_LOGI(tag, "proceed http response");
+	if (responseData.getStatus() == HttpResponse::ST_OPEN){
+	    if (handler){
+		handler->recieveRequest(*this);
+	    }else{
+		makeFileResponse();
+	    }
+	}
+	if (responseData.getStatus() == HttpResponse::ST_OPEN){
+	    responseData.setHttpStatus(
+		HttpResponse::RESP_501_NotImplemented);
+	    responseData.close();
+	}
+	responseData.flush(connection);
+	connection->flags |= MG_F_SEND_AND_CLOSE;
+    }
+}
+
+void WebServerConnection::makeFileResponse(){
+    auto provider = server->getContentProvider();
+    if (requestData.method() == HttpRequest::MethodGet && provider){
+	auto content = provider->getContent(requestData.uri());
+	if (content.length() > 0){
+	    responseData.setHttpStatus(HttpResponse::RESP_200_OK);
+	    responseData.setBody(content);
+	    auto type = findMimeType(requestData.uri());
+	    responseData.addHeader(WebString("Contet-Type"), type);
+	    responseData.close();
+	}
+    }
+    if (responseData.getStatus() == HttpResponse::ST_OPEN){
+	responseData.setHttpStatus(HttpResponse::RESP_404_NotFound);
+	responseData.addHeader(WebString("Content-Type"),
+			       WebString("text/html"));
+	responseData.setBody(WebString("<h1>Not Found</h1>\n"));
+	responseData.close();
+    }
+}
+
+//----------------------------------------------------------------------
+// WebServer imprementation
+//----------------------------------------------------------------------
+WebServer::WebServer() : contentProvider(NULL), listener(NULL){
+}
+
+WebServer::~WebServer(){
+}
+
+void WebServer::setHandler(WebServerHandler* handler,
+			   const char* path, bool exactMatch){
+    stringPtr pathPtr = stringPtr(new std::string(path));
+    
+    if (exactMatch){
+	matchHandlers[WebString(pathPtr)] = handler;
+    }else{
+	prefixHandlers[WebString(pathPtr)] = handler;
+    }
+}
+
+WebServerHandler* WebServer::findHandler(const WebString& path) const{
+    auto im = matchHandlers.find(path);
+    if (im != matchHandlers.end()){
+	return im->second;
+    }
+
+    auto ipe = prefixHandlers.find(path);
+    if (ipe != prefixHandlers.end()){
+	return ipe->second;
+    }
+    auto ipr = prefixHandlers.lower_bound(path);
+    if (ipr != prefixHandlers.end() &&
+	ipr->first.length() >= path.length() &&
+	strncmp(ipr->first.data(), path.data(), ipr->first.length())){
+	return ipr->second;
+    }
+    
+    return NULL;
+}
+
+bool WebServer::startServer(const char* address){
+    mg_mgr_init(this, this);
+    listener = mg_bind(this, address, handler);
+    if (listener == NULL){
+	ESP_LOGE(tag, "Error setting up listener");
+	return false;
+    }
+    mg_set_protocol_http_websocket(listener);
+    this->start();
+
+    return true;
+}
+
+void WebServer::handler(struct mg_connection* con, int ev, void* p){
+    WebServer* self = (WebServer*)con->mgr->user_data;
+
+    switch (ev){
+    case MG_EV_ACCEPT: {
+	char addr[32];
+	mg_sock_addr_to_str(&con->sa, addr, sizeof(addr),
+			    MG_SOCK_STRINGIFY_IP | MG_SOCK_STRINGIFY_PORT);
+	ESP_LOGI(tag, "Connection %p from %s", con, addr);
+
+	auto wcon = new WebServerConnection(self, con);
+	con->user_data = wcon;
+	break;
+    }
+    case MG_EV_CLOSE: {
+	ESP_LOGI(tag, "Connection %p closed", con);
+	auto wcon = (WebServerConnection*)con->user_data;
+	delete wcon;
+	con->user_data = NULL;
+	break;
+    }
+    case MG_EV_HTTP_REQUEST:
+    case MG_EV_HTTP_MULTIPART_REQUEST:
+    case MG_EV_HTTP_MULTIPART_REQUEST_END:
+    case MG_EV_HTTP_PART_BEGIN:
+    case MG_EV_HTTP_PART_DATA:
+    case MG_EV_HTTP_PART_END:{
+	auto wcon = (WebServerConnection*)con->user_data;
+	wcon->dispatchEvent(ev, p);
 	break;
     }
     }
 }
 
-#include "ota.h"
-class DLContext : public ConnectionContext {
-public:
-    bool image;
-    OTA* ota;
-    bool reply;
-    
-    DLContext() : image(false), ota(NULL), reply(false){};
-    virtual ~DLContext(){
-	if (ota){
-	    end(false);
-	}
-    };
-
-    void start(OTA* in){
-	ota = in;
-	image = true;
-    };
-    OTARESULT end(bool needCommit){
-	OTARESULT rc = ::endOTA(ota, needCommit);
-	ota = NULL;
-	return rc;
+void WebServer::run(void *data){
+    while (1) {
+	mg_mgr_poll(this, 1000);
     }
-};
-
-static const struct mg_str getMethod = MG_MK_STR("GET");
-static const struct mg_str postMethod = MG_MK_STR("POST");
-
-static int isEqual(const struct mg_str *s1, const struct mg_str *s2) {
-    return s1->len == s2->len && memcmp(s1->p, s2->p, s2->len) == 0;
-}
-
-void HttpServerTask::downloadHandler(struct mg_connection *nc,
-					  int ev, void *p) {
-    const char* domain = "opiopan";
-    const char* invReqMsg =
-	"HTTP/1.1 200 OK\r\n"
-	"Content-Type: text/plain\r\n"
-	"Connection: close\r\n\r\n"
-	"need to spcecify valid params and request as post\r\n";
-    
-    if (ev == MG_EV_HTTP_REQUEST){
-	ESP_LOGI(tag, "HTTP dowonload req");
-	ESP_LOGE(tag, "invalid request");
-	mg_printf(nc, invReqMsg);
-	nc->flags |= MG_F_SEND_AND_CLOSE;
-    }else if (ev == MG_EV_HTTP_MULTIPART_REQUEST){
-	ESP_LOGI(tag, "HTTP download mpart req");
-	struct http_message *hm = (struct http_message *) p;
-	if (!isEqual(&hm->method, &postMethod)){
-	    ESP_LOGE(tag, "invalid request");
-	    mg_printf(nc, invReqMsg);
-	    nc->flags |= MG_F_SEND_AND_CLOSE;
-	    return;
-	}
-
-	static const char * domain = "opiopan";
-	FILE* fp = htdigestfs_fp();
-	fseek(fp, 0, SEEK_SET);
-	if (!mg_http_check_digest_auth(hm, domain, fp)){
-	    ESP_LOGE(tag, "authorize failed");
-	    mg_http_send_digest_auth_request(nc, domain);
-	    nc->flags |= MG_F_SEND_AND_CLOSE;;
-	    return;
-	}
-	ESP_LOGI(tag, "user authorized");
-
-	mg_str* sizeStr = mg_get_http_header(hm, "X-OTA-Image-Size");
-	size_t imageSize = 0;
-	if (sizeStr){
-	    for (int i = 0; i < sizeStr->len; i++){
-		int digit = sizeStr->p[i];
-		if (digit >= '0' && digit <= '9'){
-		    imageSize *= 10;
-		    imageSize += digit - '0';
-		}else{
-		    imageSize = 0;
-		    break;
-		}
-	    }
-	    ESP_LOGI(tag, "image size: %d", imageSize);
-	}
-	
-	DLContext* ctx = new DLContext();
-	nc->user_data = ctx;
-	OTA* ota = NULL;
-	if (startOTA("/spiffs/public-key.pem", imageSize, &ota)
-	    != OTA_SUCCEED){
-	    ESP_LOGE(tag, "downloading in parallel");
-	    mg_printf(
-		nc,
-		"HTTP/1.1 200 OK\r\n"
-		"Content-Type: text/plain\r\n"
-		"Connection: close\r\n\r\n"
-		"firmware downloading is proceeding in parallel\r\n");
-	    nc->flags |= MG_F_SEND_AND_CLOSE;
-	    return;
-	}
-	ctx->start(ota);
-	mg_str* value = mg_get_http_header(hm, "Expect");
-	static const mg_str CONTINUE = MG_MK_STR("100-continue");
-	if (value != NULL && isEqual(value, &CONTINUE)) {
-	    ESP_LOGI(tag, "response 100 continue");
-	    mg_printf(nc,"HTTP/1.1 100 continue\r\n\r\n");
-	}
-    }else if (ev == MG_EV_HTTP_MULTIPART_REQUEST_END){
-	DLContext* ctx = (DLContext*)nc->user_data;
-	if (ctx && !ctx->image){
-	    ESP_LOGE(tag, "no image part");
-	    mg_http_send_digest_auth_request(nc, domain);
-	    nc->flags |= MG_F_SEND_AND_CLOSE;
-	    return;
-	}
-	ESP_LOGI(tag, "end mpart req");
-	nc->flags |= MG_F_SEND_AND_CLOSE;
-    }else if (ev == MG_EV_HTTP_PART_BEGIN) {
-	struct mg_http_multipart_part *mp =
-	    (struct mg_http_multipart_part *) p;
-	DLContext* ctx = (DLContext*)nc->user_data;
-	if (ctx && ctx->ota && strcmp(mp->var_name, "image") == 0){
-	    ESP_LOGI(tag, "begin update firmware");
-	}
-    }else if (ev == MG_EV_HTTP_PART_DATA){
-	DLContext* ctx = (DLContext*)nc->user_data;
-	if (ctx && ctx->ota){
-	    struct mg_http_multipart_part *mp =
-		(struct mg_http_multipart_part *) p;
-	    //ESP_LOGI(tag, "update data: %d bytes", mp->data.len);
-	    OTARESULT rc = ctx->ota->addDataFlagment(mp->data.p,
-						     mp->data.len);
-	    if (rc != OTA_SUCCEED){
-		ESP_LOGE(tag, "update data failed");
-		mg_printf(
-		    nc,
-		    "HTTP/1.1 200 OK\r\n"
-		    "Content-Type: text/plain\r\n"
-		    "Connection: close\r\n\r\n"
-		    "update data failed: 0x%x\r\n", rc);
-		//nc->flags |= MG_F_SEND_AND_CLOSE;
-		ctx->reply = true;
-		ctx->end(false);
-		return;
-	    }
-	}
-    }else if (ev == MG_EV_HTTP_PART_END){
-	DLContext* ctx = (DLContext*)nc->user_data;
-	if (ctx && ctx->ota){
-    	    ESP_LOGI(tag, "end update firmware");
-	    OTARESULT rc = ctx->end(true);
-	    if (rc != OTA_SUCCEED){
-		ESP_LOGE(tag, "commit failed");
-		mg_printf(
-		    nc,
-		    "HTTP/1.1 200 OK\r\n"
-		    "Content-Type: text/plain\r\n"
-		    "Connection: close\r\n\r\n"
-		    "update data failed: 0x%x\r\n", rc);
-		nc->flags |= MG_F_SEND_AND_CLOSE;
-		return;
-	    }
-	    mg_printf(nc,
-		      "HTTP/1.1 200 OK\r\n"
-		      "Content-Type: text/plain\r\n"
-		      "Connection: close\r\n\r\n"
-		      "firmware updating finished\r\n");
-	    nc->flags |= MG_F_SEND_AND_CLOSE;
-	    rebootIn(2000);
-	}
-    }
-}
-
-HttpServerTask* server;
-
-bool startHttpServer(){
-    if (server == NULL){
-	server = new HttpServerTask();
-	server->init(HTTP_SERVER_PORT);
-	server->start();
-	ESP_LOGI(tag, "HTTP server has been started. port: %s",
-		 HTTP_SERVER_PORT);
-
-	cs_md5_ctx c;
-	cs_md5_init(&c);
-	const char* str = "foo:opiopan:bar";
-	cs_md5_update(&c, (const unsigned char*)str, strlen(str));
-	unsigned char hash[16];
-	cs_md5_final(hash, &c);
-	unsigned char txt[33];
-	for (int i = 0; i < 32; i++){
-	    int data = (hash[i/2] >> (i & 1 ? 0 : 4)) & 0xf;
-	    static const unsigned char dic[] = "0123456789abcdef";
-	    txt[i] = dic[data];
-	}
-	txt[32] = 0;
-	ESP_LOGI(tag, "hash: %s", txt);
-
-	htdigestfs_init("/auth");
-	htdigestfs_register("foo", "opiopan", hash);
-
-	FILE* fp = htdigestfs_fp();
-	char buf[64];
-	int rc = fread(buf, 1, sizeof(buf), fp);
-	if (rc > 0){
-	    buf[rc] = 0;
-	    ESP_LOGI(tag, "htdigest: %s", buf);
-	}
-    }
-    return true;
 }

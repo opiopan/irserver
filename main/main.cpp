@@ -2,14 +2,16 @@
 #include <esp_spiffs.h>
 #include <esp_wifi.h>
 #include <string>
+#include <iostream>
 #include <time.h>
 #include <sys/time.h>
 #include <Task.h>
 #include <WiFi.h>
 #include <WiFiEventHandler.h>
 #include "irserver.h"
-#include "webserver.h"
+#include "mywebserver.h"
 #include "Time.h"
+#include "webserver.h"
 
 #include "boardconfig.h"
 
@@ -161,7 +163,7 @@ protected:
 	vTaskDelay(7000 / portTICK_PERIOD_MS);
 
 	BME280_I2C* dev;
-	dev = new BME280_I2C(0x76, GPIO_NUM_21, GPIO_NUM_22,
+	dev = new BME280_I2C(0x77, GPIO_NUM_25, GPIO_NUM_26,
 			     I2C::DEFAULT_CLK_SPEED,
 			     I2C_NUM_0, false);
 	dev->init();
@@ -182,6 +184,100 @@ protected:
     };
 };
 
+#include <driver/gpio.h>
+
+class LedTask : public Task {
+protected:
+    int mode;
+
+    static void IRAM_ATTR isrHandler(void* arg){
+	auto self = (LedTask*)arg;
+	self->mode = (self->mode == 0 ? 1 : 0);
+    };
+    
+    void run(void *data) override{
+	mode = 0;
+	
+	#define  LEDR 32
+	#define LEDG 33
+	#define LEDB 27
+	const uint64_t mask =
+	    ((uint64_t)1 << LEDR) |
+	    ((uint64_t)1 << LEDG) |
+	    ((uint64_t)1 << LEDB);
+	    
+	gpio_config_t config;
+	config.intr_type = (gpio_int_type_t)GPIO_PIN_INTR_DISABLE;
+	config.pin_bit_mask = mask;
+	config.mode = GPIO_MODE_OUTPUT;
+	config.pull_down_en = (gpio_pulldown_t)0;
+	config.pull_up_en = (gpio_pullup_t)0;
+	gpio_config(&config);
+
+	#define BTN 35
+	gpio_config_t oconfig;
+	oconfig.intr_type = (gpio_int_type_t)GPIO_PIN_INTR_NEGEDGE;
+	oconfig.pin_bit_mask = ((uint64_t)1 << BTN);
+	oconfig.mode = GPIO_MODE_INPUT;
+	oconfig.pull_down_en = (gpio_pulldown_t)0;
+	oconfig.pull_up_en = (gpio_pullup_t)0;
+	gpio_config(&oconfig);
+	gpio_install_isr_service(0);
+	gpio_isr_handler_add((gpio_num_t)BTN, isrHandler, (void*)this);
+
+	for (int i = 0; i < 3; i++){
+	    gpio_set_level((gpio_num_t)LEDR, 1);
+	    gpio_set_level((gpio_num_t)LEDG, 1);
+	    gpio_set_level((gpio_num_t)LEDB, 1);
+	    vTaskDelay(500 / portTICK_PERIOD_MS);
+	    gpio_set_level((gpio_num_t)LEDR, 0);
+	    gpio_set_level((gpio_num_t)LEDG, 0);
+	    gpio_set_level((gpio_num_t)LEDB, 0);
+	    vTaskDelay(500 / portTICK_PERIOD_MS);
+	}
+	
+	while (true){
+	    gpio_set_level((gpio_num_t)LEDR, 0 * mode);
+	    gpio_set_level((gpio_num_t)LEDG, 0 * mode);
+	    gpio_set_level((gpio_num_t)LEDB, 1 * mode);
+	    vTaskDelay(500 / portTICK_PERIOD_MS);
+	    gpio_set_level((gpio_num_t)LEDR, 0 * mode);
+	    gpio_set_level((gpio_num_t)LEDG, 1 * mode);
+	    gpio_set_level((gpio_num_t)LEDB, 0 * mode);
+	    vTaskDelay(500 / portTICK_PERIOD_MS);
+	    gpio_set_level((gpio_num_t)LEDR, 1 * mode);
+	    gpio_set_level((gpio_num_t)LEDG, 0 * mode);
+	    gpio_set_level((gpio_num_t)LEDB, 0 * mode);
+	    vTaskDelay(500 / portTICK_PERIOD_MS);
+	}
+	gpio_set_level((gpio_num_t)LEDR, 0);
+	gpio_set_level((gpio_num_t)LEDG, 0);
+	gpio_set_level((gpio_num_t)LEDB, 0);
+    }
+};
+
+class MyWebHandler : public WebServerHandler {
+public:
+    void recieveRequest(WebServerConnection& connection) override{
+	auto req = connection.request();
+	std::cout << "Method: " << req.methodString() << std::endl;
+	std::cout << "URI: " << req.uri() << std::endl;
+	std::cout << "Header:" << std::endl;
+	for (auto i = req.header().begin();
+	     i != req.header().end();
+	     i++){
+	    std::cout << "    " << i->first << ": "
+		      << i->second << std::endl;
+	}
+	std::cout << "Parameters:" << std::endl;
+	for (auto i = req.parameters().begin();
+	     i != req.parameters().end();
+	     i++){
+	    std::cout << "    " << i->first << " = "
+		      << i->second << std::endl;
+	}
+    }
+};
 
 extern "C" void app_main() {
     initBoard();
@@ -250,12 +346,35 @@ extern "C" void app_main() {
     static BME280Task* bmeTask = NULL;
     bmeTask = new BME280Task();
     bmeTask->start();
-    
+
+    //---------------------------------------------------
+    // LED
+    //---------------------------------------------------
+    static LedTask* ledTask = NULL;
+    ledTask = new LedTask();
+    ledTask->start();
+
+    //---------------------------------------------------
+    // GPIO for luminosity sensor / IR reciever
+    //---------------------------------------------------
+    {
+	gpio_config_t config;
+	config.intr_type = (gpio_int_type_t)GPIO_PIN_INTR_DISABLE;
+	config.pin_bit_mask = (uint64_t)1 << 4 || (uint64_t)1 << 17;
+	config.mode = GPIO_MODE_INPUT;
+	config.pull_down_en = (gpio_pulldown_t)0;
+	config.pull_up_en = (gpio_pullup_t)0;
+	gpio_config(&config);
+    }
+
     //----------------------------------------------------
     // irserver main logic
     //----------------------------------------------------
     start_mdns();
     tcpip_adapter_init();
+    auto webserver = new WebServer();
+    webserver->setHandler(new MyWebHandler, "/manage", true);
+    webserver->startServer("8080");
     startIRServer();
     startHttpServer();
     
