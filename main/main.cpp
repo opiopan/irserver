@@ -3,6 +3,7 @@
 #include <esp_wifi.h>
 #include <string>
 #include <iostream>
+#include <map>
 #include <time.h>
 #include <sys/time.h>
 #include <Task.h>
@@ -11,6 +12,7 @@
 #include "irserver.h"
 #include "mywebserver.h"
 #include "Time.h"
+#include "htdigestfs.h"
 #include "webserver.h"
 
 #include "boardconfig.h"
@@ -260,23 +262,37 @@ class MyWebHandler : public WebServerHandler {
 public:
     void recieveRequest(WebServerConnection& connection) override{
 	auto req = connection.request();
-	std::cout << "Method: " << req.methodString() << std::endl;
-	std::cout << "URI: " << req.uri() << std::endl;
+	std::cout << "Method: " << req->methodString() << std::endl;
+	std::cout << "URI: " << req->uri() << std::endl;
 	std::cout << "Header:" << std::endl;
-	for (auto i = req.header().begin();
-	     i != req.header().end();
+	for (auto i = req->header().begin();
+	     i != req->header().end();
 	     i++){
 	    std::cout << "    " << i->first << ": "
 		      << i->second << std::endl;
 	}
 	std::cout << "Parameters:" << std::endl;
-	for (auto i = req.parameters().begin();
-	     i != req.parameters().end();
+	for (auto i = req->parameters().begin();
+	     i != req->parameters().end();
 	     i++){
 	    std::cout << "    " << i->first << " = "
 		      << i->second << std::endl;
 	}
-    }
+	connection.response()->setHttpStatus(HttpResponse::RESP_200_OK);
+	connection.response()->close();
+    };
+};
+
+class MyWebHandler2 : public WebServerHandler {
+public:
+    bool needDigestAuthentication() override{
+	return true;
+    };
+
+    void recieveRequest(WebServerConnection& connection) override{
+	connection.response()->setHttpStatus(HttpResponse::RESP_200_OK);
+	connection.response()->close();
+    };
 };
 
 extern "C" void app_main() {
@@ -368,18 +384,41 @@ extern "C" void app_main() {
     }
 
     //----------------------------------------------------
+    // htdigest file preparation
+    //----------------------------------------------------
+    cs_md5_ctx c;
+    cs_md5_init(&c);
+    const char* str = "foo:opiopan:bar";
+    cs_md5_update(&c, (const unsigned char*)str, strlen(str));
+    unsigned char hash[16];
+    cs_md5_final(hash, &c);
+    unsigned char txt[33];
+    for (int i = 0; i < 32; i++){
+	int data = (hash[i/2] >> (i & 1 ? 0 : 4)) & 0xf;
+	static const unsigned char dic[] = "0123456789abcdef";
+	txt[i] = dic[data];
+    }
+    txt[32] = 0;
+    ESP_LOGI(tag, "hash: %s", txt);
+
+    htdigestfs_init("/auth");
+    htdigestfs_register("foo", "opiopan", hash);
+    
+    //----------------------------------------------------
     // irserver main logic
     //----------------------------------------------------
     start_mdns();
     tcpip_adapter_init();
+    
     auto webserver = new WebServer();
-    webserver->setHandler(new MyWebHandler, "/manage", true);
+    webserver->setHandler(new MyWebHandler, "/tool/", false);
+    webserver->setHandler(new MyWebHandler2, "/manage/", false);
+    webserver->setHtdigest(htdigestfs_fp(), "irserver");
     webserver->startServer("8080");
     startIRServer();
     startHttpServer();
     
     MyWiFiEventHandler *eventHandler = new MyWiFiEventHandler();
-	
     wifi = new WiFi();
     wifi->setWifiEventHandler(eventHandler);
 

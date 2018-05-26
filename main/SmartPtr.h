@@ -3,6 +3,8 @@
 //----------------------------------------------------------------------
 #pragma once
 
+#include <iostream>
+
 namespace HSL{ namespace Base {
 
 template <class T> class SmartPtr{

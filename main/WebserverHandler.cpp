@@ -50,15 +50,15 @@ void WebServerHandler::updateMultipartData(WebServerConnection& connection,
 					   const void* data, size_t length){
     auto context = (MultipartContext*)connection.getUserContext();
     if (context->value->length() + length > DEFAULT_MULTIPART_DATA_MAX){
-	connection.response().setHttpStatus(
+	connection.response()->setHttpStatus(
 	    HttpResponse::RESP_500_InternalServerError);
-	connection.response().addHeader(
+	connection.response()->addHeader(
 	    WebString("Content-Type"), WebString("text/plain"));
 	std::stringstream body;
 	body << "parameter \"" << key << "\" is too long";
 	WebString bodyStr = stringPtr(new std::string(body.str()));
-	connection.response().setBody(bodyStr);
-	connection.response().close();
+	connection.response()->setBody(bodyStr);
+	connection.response()->close();
     }else{
 	context->value->append((const char*)data, length);
     }
@@ -66,6 +66,6 @@ void WebServerHandler::updateMultipartData(WebServerConnection& connection,
 
 void WebServerHandler::endMultipartData(WebServerConnection& connection){
     auto context = (MultipartContext*)connection.getUserContext();
-    connection.request().addParameter(context->key,
-				      WebString(context->value));
+    connection.request()->addParameter(context->key,
+				       WebString(context->value));
 }

@@ -40,6 +40,7 @@ static WebString webStringWithoutCopy(const mg_str& src){
 };
 
 void HttpRequest::reset(http_message* msg, bool copy){
+    ESP_LOGI(tag, "HttpRequest::reset");
     headerData.clear();
     parametersData.clear();
     delete[] parametersBuf;
@@ -74,8 +75,8 @@ void HttpRequest::reset(http_message* msg, bool copy){
 	if (msg->header_names[i].p == NULL){
 	    break;
 	}
-	headerData[WebString(msg->header_names[i])] =
-	    WebString(msg->header_values[i]);
+	headerData[genstr(msg->header_names[i])] =
+	    genstr(msg->header_values[i]);
     }
 
     const WebString ctype = headerData[WebString("Content-Type")];
@@ -96,11 +97,11 @@ void HttpRequest::setParameters(const mg_str* src) {
     for (int end = 0; end < src->len + 1; end++){
 	if (end == src->len || src->p[end] == '&'){
 	    int len = mg_url_decode(src->p + begin, end - begin,
-				    parametersBuf + begin, end -begin,
+				    parametersBuf + begin, end -begin + 1,
 				    true);
 	    if (len > 0){
 		for (int separator = begin; separator < end; separator++){
-		    if (parametersBuf[begin] == '='){
+		    if (parametersBuf[separator] == '='){
 			const auto key =
 			    WebString(parametersBuf + begin,
 				      separator - begin);
@@ -205,6 +206,7 @@ void WebServerConnection::dispatchEvent(int ev, void* p){
 	responseData.reset();
 	handler = server->findHandler(requestData.uri());
 	status = CON_COMPLETE;
+	authenticate(hm);
 	break;
     }
     case MG_EV_HTTP_MULTIPART_REQUEST: {
@@ -214,6 +216,10 @@ void WebServerConnection::dispatchEvent(int ev, void* p){
 	requestData.reset(hm, true);
 	responseData.reset();
 	handler = server->findHandler(requestData.uri());
+	if (!authenticate(hm)){
+	    status = CON_COMPLETE;
+	    break;
+	}
 	if (handler){
 	    handler->beginMultipart(*this);
 	    if (responseData.getStatus() == HttpResponse::ST_CLOSE){
@@ -316,10 +322,28 @@ void WebServerConnection::makeFileResponse(){
     }
 }
 
+bool WebServerConnection::authenticate(http_message* hm){
+    if (handler && handler->needDigestAuthentication()){
+	auto htdigest = server->getHtdigest();
+	fseek(htdigest->fp, 0, SEEK_SET);
+	if (!mg_http_check_digest_auth(hm, htdigest->domain,
+				       htdigest->fp)){
+	    ESP_LOGE(tag, "authorize failed");
+	    mg_http_send_digest_auth_request(connection, htdigest->domain);
+	    responseData.close(HttpResponse::ST_FLUSHED);
+	    connection->flags |= MG_F_SEND_AND_CLOSE;;
+	    return false;
+	}
+    }
+    return true;
+}
+
 //----------------------------------------------------------------------
 // WebServer imprementation
 //----------------------------------------------------------------------
 WebServer::WebServer() : contentProvider(NULL), listener(NULL){
+    htdigest.fp = NULL;
+    htdigest.domain = NULL;
 }
 
 WebServer::~WebServer(){
@@ -346,10 +370,11 @@ WebServerHandler* WebServer::findHandler(const WebString& path) const{
     if (ipe != prefixHandlers.end()){
 	return ipe->second;
     }
-    auto ipr = prefixHandlers.lower_bound(path);
+
+    auto ipr = prefixHandlers.upper_bound(path);
     if (ipr != prefixHandlers.end() &&
-	ipr->first.length() >= path.length() &&
-	strncmp(ipr->first.data(), path.data(), ipr->first.length())){
+	ipr->first.length() <= path.length() &&
+	strncmp(ipr->first.data(), path.data(), ipr->first.length()) == 0){
 	return ipr->second;
     }
     

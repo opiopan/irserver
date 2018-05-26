@@ -208,6 +208,7 @@ public:
 	delete[] parametersBuf;
     };
 
+
     void reset(http_message* msg, bool copy = false);
     void addParameter(const WebString& key, const WebString& value);
 
@@ -344,12 +345,12 @@ public:
     };
     virtual ~WebServerConnection(){};
 
-    HttpRequest& request(){
-	return requestData;
+    HttpRequest* request(){
+	return &requestData;
     };
 
-    HttpResponse& response(){
-	return responseData;
+    HttpResponse* response(){
+	return &responseData;
     };
 
     void setUserContext(void* context){
@@ -364,6 +365,7 @@ public:
 
 protected:
     void makeFileResponse();
+    bool authenticate(http_message* hm);
 };
 
 class WebServer : protected Task, mg_mgr {
@@ -371,7 +373,12 @@ protected:
     const  ContentProvider* contentProvider;
     mg_connection* listener;
     std::map<WebString, WebServerHandler*> matchHandlers;
-    std::map<WebString, WebServerHandler*> prefixHandlers;
+    std::map<WebString, WebServerHandler*,
+	     std::greater<WebString> > prefixHandlers;
+    struct HTDIGEST{
+	FILE* fp;
+	const char* domain;
+    } htdigest;
     
 public:
     WebServer();
@@ -386,6 +393,14 @@ public:
     void setHandler(WebServerHandler* handler,
 		    const char* path, bool exactMatch = true);
     WebServerHandler* findHandler(const WebString& path) const;
+
+    void setHtdigest(FILE* fp, const char* domain){
+	htdigest.fp = fp;
+	htdigest.domain = domain;
+    };
+    const HTDIGEST* getHtdigest() const{
+	return &htdigest;
+    };
     
     bool startServer(const char* address);
 

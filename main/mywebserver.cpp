@@ -312,32 +312,6 @@ bool startHttpServer(){
 	server->start();
 	ESP_LOGI(tag, "HTTP server has been started. port: %s",
 		 HTTP_SERVER_PORT);
-
-	cs_md5_ctx c;
-	cs_md5_init(&c);
-	const char* str = "foo:opiopan:bar";
-	cs_md5_update(&c, (const unsigned char*)str, strlen(str));
-	unsigned char hash[16];
-	cs_md5_final(hash, &c);
-	unsigned char txt[33];
-	for (int i = 0; i < 32; i++){
-	    int data = (hash[i/2] >> (i & 1 ? 0 : 4)) & 0xf;
-	    static const unsigned char dic[] = "0123456789abcdef";
-	    txt[i] = dic[data];
-	}
-	txt[32] = 0;
-	ESP_LOGI(tag, "hash: %s", txt);
-
-	htdigestfs_init("/auth");
-	htdigestfs_register("foo", "opiopan", hash);
-
-	FILE* fp = htdigestfs_fp();
-	char buf[64];
-	int rc = fread(buf, 1, sizeof(buf), fp);
-	if (rc > 0){
-	    buf[rc] = 0;
-	    ESP_LOGI(tag, "htdigest: %s", buf);
-	}
     }
     return true;
 }
